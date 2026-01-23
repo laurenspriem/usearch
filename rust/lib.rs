@@ -246,6 +246,7 @@ impl std::fmt::Debug for f16 {
     }
 }
 
+#[allow(unused_attributes)]
 #[cxx::bridge]
 pub mod ffi {
 
@@ -370,6 +371,58 @@ pub mod ffi {
             -> Result<Matches>;
         pub fn exact_search_f64(self: &NativeIndex, query: &[f64], count: usize)
             -> Result<Matches>;
+
+        pub fn search_within_radius_b1x8(
+            self: &NativeIndex,
+            query: &[u8],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn search_within_radius_i8(
+            self: &NativeIndex,
+            query: &[i8],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn search_within_radius_f16(
+            self: &NativeIndex,
+            query: &[i16],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn search_within_radius_f32(
+            self: &NativeIndex,
+            query: &[f32],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn search_within_radius_f64(
+            self: &NativeIndex,
+            query: &[f64],
+            radius: f32,
+        ) -> Result<Matches>;
+
+        pub fn exact_search_within_radius_b1x8(
+            self: &NativeIndex,
+            query: &[u8],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn exact_search_within_radius_i8(
+            self: &NativeIndex,
+            query: &[i8],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn exact_search_within_radius_f16(
+            self: &NativeIndex,
+            query: &[i16],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn exact_search_within_radius_f32(
+            self: &NativeIndex,
+            query: &[f32],
+            radius: f32,
+        ) -> Result<Matches>;
+        pub fn exact_search_within_radius_f64(
+            self: &NativeIndex,
+            query: &[f64],
+            radius: f32,
+        ) -> Result<Matches>;
 
         pub fn filtered_search_b1x8(
             self: &NativeIndex,
@@ -653,6 +706,76 @@ pub trait VectorType {
     where
         Self: Sized;
 
+    /// Performs an approximate search for all matches within a given radius.
+    ///
+    /// # Parameters
+    /// - `index`: A reference to the `Index` where the search is to be performed.
+    /// - `query`: A slice representing the query vector.
+    /// - `radius`: The maximum distance for matches to include.
+    ///
+    /// # Returns
+    /// - `Ok(ffi::Matches)` containing the matches found within the radius.
+    /// - `Err(cxx::Exception)` if an error occurred during the search operation.
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception>
+    where
+        Self: Sized,
+    {
+        if radius.is_nan() {
+            return Ok(empty_matches());
+        }
+
+        let size = index.size();
+        if size == 0 {
+            return Ok(empty_matches());
+        }
+
+        if radius.is_infinite() && radius.is_sign_positive() {
+            return Self::search(index, query, size);
+        }
+
+        let matches = Self::search(index, query, size)?;
+        Ok(filter_matches_by_radius(matches, radius))
+    }
+
+    /// Performs an exact search for all matches within a given radius.
+    ///
+    /// # Parameters
+    /// - `index`: A reference to the `Index` where the search is to be performed.
+    /// - `query`: A slice representing the query vector.
+    /// - `radius`: The maximum distance for matches to include.
+    ///
+    /// # Returns
+    /// - `Ok(ffi::Matches)` containing the matches found within the radius.
+    /// - `Err(cxx::Exception)` if an error occurred during the search operation.
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception>
+    where
+        Self: Sized,
+    {
+        if radius.is_nan() {
+            return Ok(empty_matches());
+        }
+
+        let size = index.size();
+        if size == 0 {
+            return Ok(empty_matches());
+        }
+
+        if radius.is_infinite() && radius.is_sign_positive() {
+            return Self::exact_search(index, query, size);
+        }
+
+        let matches = Self::exact_search(index, query, size)?;
+        Ok(filter_matches_by_radius(matches, radius))
+    }
+
     /// Performs a filtered search in the index using a query vector and a custom
     /// filter function, returning up to `count` matches that satisfy the filter.
     ///
@@ -705,6 +828,22 @@ impl VectorType for f32 {
         count: usize,
     ) -> Result<ffi::Matches, cxx::Exception> {
         index.inner.exact_search_f32(query, count)
+    }
+
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.search_within_radius_f32(query, radius)
+    }
+
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.exact_search_within_radius_f32(query, radius)
     }
 
     fn get(index: &Index, key: Key, vector: &mut [Self]) -> Result<usize, cxx::Exception> {
@@ -782,6 +921,22 @@ impl VectorType for i8 {
         index.inner.exact_search_i8(query, count)
     }
 
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.search_within_radius_i8(query, radius)
+    }
+
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.exact_search_within_radius_i8(query, radius)
+    }
+
     fn get(index: &Index, key: Key, vector: &mut [Self]) -> Result<usize, cxx::Exception> {
         index.inner.get_i8(key, vector)
     }
@@ -856,6 +1011,22 @@ impl VectorType for f64 {
         index.inner.exact_search_f64(query, count)
     }
 
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.search_within_radius_f64(query, radius)
+    }
+
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index.inner.exact_search_within_radius_f64(query, radius)
+    }
+
     fn get(index: &Index, key: Key, vector: &mut [Self]) -> Result<usize, cxx::Exception> {
         index.inner.get_f64(key, vector)
     }
@@ -928,6 +1099,26 @@ impl VectorType for f16 {
         count: usize,
     ) -> Result<ffi::Matches, cxx::Exception> {
         index.inner.exact_search_f16(f16::to_i16s(query), count)
+    }
+
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index
+            .inner
+            .search_within_radius_f16(f16::to_i16s(query), radius)
+    }
+
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index
+            .inner
+            .exact_search_within_radius_f16(f16::to_i16s(query), radius)
     }
 
     fn get(index: &Index, key: Key, vector: &mut [Self]) -> Result<usize, cxx::Exception> {
@@ -1008,6 +1199,26 @@ impl VectorType for b1x8 {
         index.inner.exact_search_b1x8(b1x8::to_u8s(query), count)
     }
 
+    fn search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index
+            .inner
+            .search_within_radius_b1x8(b1x8::to_u8s(query), radius)
+    }
+
+    fn exact_search_within_radius(
+        index: &Index,
+        query: &[Self],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        index
+            .inner
+            .exact_search_within_radius_b1x8(b1x8::to_u8s(query), radius)
+    }
+
     fn get(index: &Index, key: Key, vector: &mut [Self]) -> Result<usize, cxx::Exception> {
         index.inner.get_b1x8(key, b1x8::to_mut_u8s(vector))
     }
@@ -1071,6 +1282,38 @@ impl VectorType for b1x8 {
 
         Ok(())
     }
+}
+
+fn empty_matches() -> ffi::Matches {
+    ffi::Matches {
+        keys: Vec::new(),
+        distances: Vec::new(),
+    }
+}
+
+fn filter_matches_by_radius(mut matches: ffi::Matches, radius: Distance) -> ffi::Matches {
+    if radius.is_nan() {
+        return empty_matches();
+    }
+    if radius.is_infinite() && radius.is_sign_positive() {
+        return matches;
+    }
+
+    let len = std::cmp::min(matches.keys.len(), matches.distances.len());
+    let mut keep = 0;
+    for i in 0..len {
+        let distance = matches.distances[i];
+        if distance <= radius {
+            if keep != i {
+                matches.keys[keep] = matches.keys[i];
+                matches.distances[keep] = distance;
+            }
+            keep += 1;
+        }
+    }
+    matches.keys.truncate(keep);
+    matches.distances.truncate(keep);
+    matches
 }
 
 impl Index {
@@ -1144,6 +1387,30 @@ impl Index {
         T::search(self, query, count)
     }
 
+    /// Performs an approximate search for all vectors within a given distance.
+    ///
+    /// This method uses the index traversal to collect matches within the radius.
+    /// This is still an approximate search and may miss some matches within the radius.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - A slice containing the query vector data.
+    /// * `radius` - The maximum distance for matches to include.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the matches found within the radius.
+    pub fn search_within_radius<T: VectorType>(
+        self: &Index,
+        query: &[T],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        if radius.is_nan() {
+            return Ok(empty_matches());
+        }
+        T::search_within_radius(self, query, radius)
+    }
+
     /// Performs exact (brute force) Nearest Neighbors Search for closest vectors to the provided query.
     /// This search checks all vectors in the index, guaranteeing to find the true nearest neighbors,
     /// but may be slower for large indices.
@@ -1162,6 +1429,30 @@ impl Index {
         count: usize,
     ) -> Result<ffi::Matches, cxx::Exception> {
         T::exact_search(self, query, count)
+    }
+
+    /// Performs an exact search for all vectors within a given distance.
+    ///
+    /// This method scans the full index to find all matches within the radius.
+    /// It may allocate results up to the index size.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - A slice containing the query vector data.
+    /// * `radius` - The maximum distance for matches to include.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the matches found within the radius.
+    pub fn exact_search_within_radius<T: VectorType>(
+        self: &Index,
+        query: &[T],
+        radius: Distance,
+    ) -> Result<ffi::Matches, cxx::Exception> {
+        if radius.is_nan() {
+            return Ok(empty_matches());
+        }
+        T::exact_search_within_radius(self, query, radius)
     }
 
     /// Performs k-Approximate Nearest Neighbors (kANN) Search for closest vectors to the provided query
@@ -1575,6 +1866,31 @@ mod tests {
 
         assert!(index.search(&too_long, 1).is_err());
         assert!(index.search(&too_short, 1).is_err());
+    }
+
+    #[test]
+    fn test_search_within_radius() {
+        let options = IndexOptions {
+            dimensions: 2,
+            metric: MetricKind::L2sq,
+            quantization: ScalarKind::F32,
+            ..Default::default()
+        };
+        let index = Index::new(&options).unwrap();
+        index.reserve(3).unwrap();
+
+        index.add(1, &[0.0, 0.0]).unwrap();
+        index.add(2, &[1.0, 0.0]).unwrap();
+        index.add(3, &[2.0, 0.0]).unwrap();
+
+        let query = [0.0f32, 0.0f32];
+        let matches = index.search_within_radius(&query, 1.0).unwrap();
+        assert!(matches.distances.iter().all(|&d| d <= 1.0));
+        assert!(matches.keys.iter().all(|&k| k != 3));
+
+        let exact_matches = index.exact_search_within_radius(&query, 1.0).unwrap();
+        assert_eq!(exact_matches.keys, vec![1, 2]);
+        assert_eq!(exact_matches.distances, vec![0.0, 1.0]);
     }
 
     #[test]

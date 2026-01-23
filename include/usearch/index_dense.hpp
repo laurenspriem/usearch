@@ -771,6 +771,13 @@ class index_dense_gt {
     search_result_t search(f32_t const* vector, std::size_t wanted, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, dummy_predicate_t {}, thread, exact, casts_.from.f32); }
     search_result_t search(f64_t const* vector, std::size_t wanted, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, dummy_predicate_t {}, thread, exact, casts_.from.f64); }
 
+    search_result_t search_within_radius(b1x8_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.b1x8); }
+    search_result_t search_within_radius(i8_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.i8); }
+    search_result_t search_within_radius(f16_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.f16); }
+    search_result_t search_within_radius(bf16_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.bf16); }
+    search_result_t search_within_radius(f32_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.f32); }
+    search_result_t search_within_radius(f64_t const* vector, distance_t radius, std::size_t thread = any_thread(), bool exact = false) const { return search_within_radius_(vector, radius, dummy_predicate_t {}, thread, exact, casts_.from.f64); }
+
     template <typename predicate_at> search_result_t filtered_search(b1x8_t const* vector, std::size_t wanted, predicate_at&& predicate, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, std::forward<predicate_at>(predicate), thread, exact, casts_.from.b1x8); }
     template <typename predicate_at> search_result_t filtered_search(i8_t const* vector, std::size_t wanted, predicate_at&& predicate, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, std::forward<predicate_at>(predicate), thread, exact, casts_.from.i8); }
     template <typename predicate_at> search_result_t filtered_search(f16_t const* vector, std::size_t wanted, predicate_at&& predicate, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, std::forward<predicate_at>(predicate), thread, exact, casts_.from.f16); }
@@ -2080,6 +2087,42 @@ class index_dense_gt {
                 return (vector_key_t)member.key != free_key_copy && predicate(member.key);
             };
             auto typed_result = typed_->search(vector_data, wanted, metric_proxy_t{*this}, search_config, allow);
+            return search_result_t{std::move(typed_result), std::move(lock)};
+        }
+    }
+
+    template <typename scalar_at, typename predicate_at>
+    search_result_t search_within_radius_(scalar_at const* vector, distance_t radius, predicate_at&& predicate,
+                                          std::size_t thread, bool exact, cast_punned_t const& cast) const {
+
+        thread_lock_t lock = thread_lock_(thread);
+        byte_t const* vector_data = reinterpret_cast<byte_t const*>(vector);
+        {
+            byte_t* casted_data = cast_buffer_.data() + metric_.bytes_per_vector() * lock.thread_id;
+            bool casted = cast(vector_data, dimensions(), casted_data);
+            if (casted)
+                vector_data = casted_data;
+        }
+
+        index_search_config_t search_config;
+        search_config.thread = lock.thread_id;
+        search_config.expansion = config_.expansion_search;
+        search_config.exact = exact;
+
+        vector_key_t free_key_copy = free_key_;
+        if (std::is_same<typename std::decay<predicate_at>::type, dummy_predicate_t>::value) {
+            auto allow = [free_key_copy](member_cref_t const& member) noexcept {
+                return (vector_key_t)member.key != free_key_copy;
+            };
+            auto typed_result =
+                typed_->search_within_radius(vector_data, radius, metric_proxy_t{*this}, search_config, allow);
+            return search_result_t{std::move(typed_result), std::move(lock)};
+        } else {
+            auto allow = [free_key_copy, &predicate](member_cref_t const& member) noexcept {
+                return (vector_key_t)member.key != free_key_copy && predicate(member.key);
+            };
+            auto typed_result =
+                typed_->search_within_radius(vector_data, radius, metric_proxy_t{*this}, search_config, allow);
             return search_result_t{std::move(typed_result), std::move(lock)};
         }
     }

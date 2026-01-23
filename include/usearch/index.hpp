@@ -857,18 +857,20 @@ class sorted_buffer_gt {
     element_t* elements_;
     std::size_t size_;
     std::size_t capacity_;
+    bool sorted_;
 
   public:
-    sorted_buffer_gt() noexcept : elements_(nullptr), size_(0), capacity_(0) {}
+    sorted_buffer_gt() noexcept : elements_(nullptr), size_(0), capacity_(0), sorted_(true) {}
 
     sorted_buffer_gt(sorted_buffer_gt&& other) noexcept
         : elements_(exchange(other.elements_, nullptr)), size_(exchange(other.size_, 0)),
-          capacity_(exchange(other.capacity_, 0)) {}
+          capacity_(exchange(other.capacity_, 0)), sorted_(exchange(other.sorted_, true)) {}
 
     sorted_buffer_gt& operator=(sorted_buffer_gt&& other) noexcept {
         std::swap(elements_, other.elements_);
         std::swap(size_, other.size_);
         std::swap(capacity_, other.capacity_);
+        std::swap(sorted_, other.sorted_);
         return *this;
     }
 
@@ -883,13 +885,17 @@ class sorted_buffer_gt {
         elements_ = nullptr;
         capacity_ = 0;
         size_ = 0;
+        sorted_ = true;
     }
 
     inline bool empty() const noexcept { return !size_; }
     inline std::size_t size() const noexcept { return size_; }
     inline std::size_t capacity() const noexcept { return capacity_; }
     inline element_t const& top() const noexcept { return elements_[size_ - 1]; }
-    inline void clear() noexcept { size_ = 0; }
+    inline void clear() noexcept {
+        size_ = 0;
+        sorted_ = true;
+    }
 
     bool reserve(std::size_t new_capacity) noexcept {
         if (new_capacity < capacity_)
@@ -922,6 +928,15 @@ class sorted_buffer_gt {
         size_++;
     }
 
+    inline bool push_back_unordered(element_t const& element) noexcept {
+        if (!reserve(size_ + 1))
+            return false;
+        elements_[size_] = element;
+        size_++;
+        sorted_ = false;
+        return true;
+    }
+
     /**
      *  @return `true` if the entry was added, `false` if it wasn't relevant enough.
      */
@@ -945,7 +960,14 @@ class sorted_buffer_gt {
         return result;
     }
 
-    void sort_ascending() noexcept {}
+    void sort_ascending() noexcept {
+        if (sorted_) {
+            return;
+        }
+        if (size_ > 1)
+            std::sort(elements_, elements_ + size_, &less);
+        sorted_ = true;
+    }
     inline void shrink(std::size_t n) noexcept { size_ = (std::min<std::size_t>)(n, size_); }
 
     inline element_t* data() noexcept { return elements_; }
@@ -3079,6 +3101,71 @@ class index_gt {
     }
 
     /**
+     *  @brief Searches for all elements within a given radius from the ::query. Thread-safe.
+     *
+     *  @param[in] query Content that will be compared against other entries in the index.
+     *  @param[in] radius Maximum allowed distance for results.
+     *  @param[in] config Configuration options for this specific operation.
+     *  @param[in] predicate Optional filtering predicate for `member_cref_t`.
+     *  @return Smart object referencing temporary memory. Valid until next `search()`, `add()`, or `cluster()`.
+     */
+    template <                                     //
+        typename value_at,                         //
+        typename metric_at,                        //
+        typename predicate_at = dummy_predicate_t, //
+        typename prefetch_at = dummy_prefetch_t    //
+        >
+    search_result_t search_within_radius(          //
+        value_at&& query,                          //
+        distance_t radius,                         //
+        metric_at&& metric,                        //
+        index_search_config_t config = {},         //
+        predicate_at&& predicate = predicate_at{}, //
+        prefetch_at&& prefetch = prefetch_at{}) const usearch_noexcept_m {
+
+        if (!config.expansion)
+            config.expansion = default_expansion_search();
+
+        context_t* context_ptr = contexts_.data() ? contexts_.data() + config.thread : nullptr;
+        top_candidates_t* top_ptr = context_ptr ? &context_ptr->top_candidates : nullptr;
+        search_result_t result{*this, top_ptr};
+        if (!nodes_count_.load(std::memory_order_relaxed))
+            return result;
+
+        usearch_assert_m(contexts_.size() > config.thread, "Thread index out of bounds");
+        context_t& context = *context_ptr;
+        top_candidates_t& top = *top_ptr;
+
+        result.computed_distances = context.computed_distances;
+        result.visited_members = context.iteration_cycles;
+
+        if (config.exact) {
+            if (!search_exact_within_radius_(query, metric, predicate, radius, context))
+                return result.failed("Out of memory!");
+        } else {
+            next_candidates_t& next = context.next_candidates;
+            std::size_t expansion = (std::max)(config.expansion, std::size_t{1});
+            usearch_assert_m(expansion > 0, "Expansion factor can't be a zero!");
+            if (!next.reserve(expansion))
+                return result.failed("Out of memory!");
+
+            compressed_slot_t closest_slot = search_for_one_(
+                query, metric, prefetch, static_cast<compressed_slot_t>(entry_slot_), max_level_, 0, context);
+
+            if (!search_to_find_in_base_within_radius_(
+                    query, metric, predicate, prefetch, closest_slot, expansion, radius, context))
+                return result.failed("Out of memory!");
+        }
+
+        top.sort_ascending();
+
+        result.computed_distances = context.computed_distances - result.computed_distances;
+        result.visited_members = context.iteration_cycles - result.visited_members;
+        result.count = top.size();
+        return result;
+    }
+
+    /**
      *  @brief Identifies the closest cluster to the given ::query. Thread-safe.
      *
      *  @param[in] query Content that will be compared against other entries in the index.
@@ -4275,6 +4362,86 @@ class index_gt {
     }
 
     /**
+     *  @brief  Traverses the base layer to find all matches within a given radius.
+     *          Uses the radius for early termination and an expansion hint for exploration.
+     */
+    template <typename value_at, typename metric_at, typename predicate_at, typename prefetch_at>
+    bool search_to_find_in_base_within_radius_(                                                  //
+        value_at&& query, metric_at&& metric, predicate_at&& predicate, prefetch_at&& prefetch,  //
+        compressed_slot_t start_slot, std::size_t expansion, distance_t radius, context_t& context) const
+        usearch_noexcept_m {
+
+        visits_hash_set_t& visits = context.visits;
+        next_candidates_t& next = context.next_candidates; // pop min, push
+        top_candidates_t& top = context.top_candidates;
+
+        visits.clear();
+        next.clear();
+        top.clear();
+        if (!visits.reserve(config_.connectivity_base + 1u))
+            return false;
+
+        if (!is_dummy<prefetch_at>())
+            prefetch(citerator_at(start_slot), citerator_at(start_slot) + 1);
+
+        distance_t start_dist = context.measure(query, citerator_at(start_slot), metric);
+        usearch_assert_m(next.capacity(), "The `max_heap_gt` must have been reserved in the search entry point");
+        next.insert_reserved({-start_dist, start_slot});
+        visits.set(start_slot);
+
+        if (start_dist <= radius) {
+            if (is_dummy<predicate_at>() || predicate(member_cref_t{node_at_(start_slot).ckey(), start_slot})) {
+                if (!top.push_back_unordered({start_dist, start_slot}))
+                    return false;
+            }
+        }
+
+        std::size_t explored = 0;
+        while (!next.empty()) {
+
+            candidate_t candidate = next.top();
+            if ((-candidate.distance) > radius && explored >= expansion)
+                break;
+
+            next.pop();
+            context.iteration_cycles++;
+            explored++;
+
+            neighbors_ref_t candidate_neighbors = neighbors_base_(node_at_(candidate.slot));
+
+            if (!is_dummy<prefetch_at>()) {
+                candidates_range_t missing_candidates{*this, candidate_neighbors, visits};
+                prefetch(missing_candidates.begin(), missing_candidates.end());
+            }
+
+            if (!visits.reserve(visits.size() + candidate_neighbors.size()))
+                return false;
+
+            for (compressed_slot_t successor_slot : candidate_neighbors) {
+                if (visits.set(successor_slot))
+                    continue;
+
+                distance_t successor_dist = context.measure(query, citerator_at(successor_slot), metric);
+
+                if (successor_dist <= radius) {
+                    if (is_dummy<predicate_at>() ||
+                        predicate(member_cref_t{node_at_(successor_slot).ckey(), successor_slot})) {
+                        if (!top.push_back_unordered({successor_dist, successor_slot}))
+                            return false;
+                    }
+                }
+
+                if (successor_dist <= radius || next.size() < expansion) {
+                    if (!next.insert({-successor_dist, successor_slot}))
+                        return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
      *  @brief  Iterates through all members, without actually touching the index.
      */
     template <typename value_at, typename metric_at, typename predicate_at>
@@ -4294,6 +4461,31 @@ class index_gt {
             distance_t distance = context.measure(query, citerator_at(slot), metric);
             top.insert(candidate_t{distance, slot}, count);
         }
+    }
+
+    /**
+     *  @brief  Iterates through all members and keeps matches within the radius.
+     */
+    template <typename value_at, typename metric_at, typename predicate_at>
+    bool search_exact_within_radius_(                                    //
+        value_at&& query, metric_at&& metric, predicate_at&& predicate, //
+        distance_t radius, context_t& context) const noexcept {
+
+        top_candidates_t& top = context.top_candidates;
+        top.clear();
+        for (std::size_t i = 0; i != size(); ++i) {
+            auto slot = static_cast<compressed_slot_t>(i);
+            if (!is_dummy<predicate_at>())
+                if (!predicate(at(slot)))
+                    continue;
+
+            distance_t distance = context.measure(query, citerator_at(slot), metric);
+            if (distance <= radius) {
+                if (!top.push_back_unordered({distance, slot}))
+                    return false;
+            }
+        }
+        return true;
     }
 
     /**

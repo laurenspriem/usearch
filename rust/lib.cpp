@@ -7,6 +7,7 @@ using namespace unum;
 using index_t = index_dense_t;
 using add_result_t = typename index_t::add_result_t;
 using search_result_t = typename index_t::search_result_t;
+using distance_t = typename index_t::distance_t;
 using labeling_result_t = typename index_t::labeling_result_t;
 using vector_key_t = typename index_dense_t::vector_key_t;
 
@@ -49,6 +50,27 @@ Matches search_(index_dense_t& index, scalar_at const* vec, size_t vec_dims, siz
 
     search_result_t result = index.search(vec, count, index_dense_t::any_thread(), exact);
     result.error.raise();
+    count = result.dump_to(matches.keys.data(), matches.distances.data(), count);
+    matches.keys.truncate(count);
+    matches.distances.truncate(count);
+    return matches;
+}
+
+template <typename scalar_at>
+Matches search_within_radius_(index_dense_t& index, scalar_at const* vec, size_t vec_dims, distance_t radius,
+                              bool exact = false) {
+    if (vec_dims != index.scalar_words())
+        throw std::invalid_argument("Vector length must match index dimensionality");
+    search_result_t result = index.search_within_radius(vec, radius, index_dense_t::any_thread(), exact);
+    result.error.raise();
+
+    Matches matches;
+    std::size_t count = result.size();
+    matches.keys.reserve(count);
+    matches.distances.reserve(count);
+    for (std::size_t i = 0; i != count; ++i)
+        matches.keys.push_back(0), matches.distances.push_back(0);
+
     count = result.dump_to(matches.keys.data(), matches.distances.data(), count);
     matches.keys.truncate(count);
     matches.distances.truncate(count);
@@ -110,6 +132,19 @@ Matches NativeIndex::exact_search_i8(rust::Slice<int8_t const> vec, size_t count
 Matches NativeIndex::exact_search_f16(rust::Slice<int16_t const> vec, size_t count) const { return search_(*index_, (f16_t const*)vec.data(), vec.size(), count, true); }
 Matches NativeIndex::exact_search_f32(rust::Slice<float const> vec, size_t count) const { return search_(*index_, vec.data(), vec.size(), count, true); }
 Matches NativeIndex::exact_search_f64(rust::Slice<double const> vec, size_t count) const { return search_(*index_, vec.data(), vec.size(), count, true); }
+
+// Radius search
+Matches NativeIndex::search_within_radius_b1x8(rust::Slice<uint8_t const> vec, float radius) const { return search_within_radius_(*index_, (b1x8_t const*)vec.data(), vec.size(), radius, false); }
+Matches NativeIndex::search_within_radius_i8(rust::Slice<int8_t const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, false); }
+Matches NativeIndex::search_within_radius_f16(rust::Slice<int16_t const> vec, float radius) const { return search_within_radius_(*index_, (f16_t const*)vec.data(), vec.size(), radius, false); }
+Matches NativeIndex::search_within_radius_f32(rust::Slice<float const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, false); }
+Matches NativeIndex::search_within_radius_f64(rust::Slice<double const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, false); }
+
+Matches NativeIndex::exact_search_within_radius_b1x8(rust::Slice<uint8_t const> vec, float radius) const { return search_within_radius_(*index_, (b1x8_t const*)vec.data(), vec.size(), radius, true); }
+Matches NativeIndex::exact_search_within_radius_i8(rust::Slice<int8_t const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, true); }
+Matches NativeIndex::exact_search_within_radius_f16(rust::Slice<int16_t const> vec, float radius) const { return search_within_radius_(*index_, (f16_t const*)vec.data(), vec.size(), radius, true); }
+Matches NativeIndex::exact_search_within_radius_f32(rust::Slice<float const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, true); }
+Matches NativeIndex::exact_search_within_radius_f64(rust::Slice<double const> vec, float radius) const { return search_within_radius_(*index_, vec.data(), vec.size(), radius, true); }
 
 // Filtered search (always approximate)
 Matches NativeIndex::filtered_search_b1x8(rust::Slice<uint8_t const> vec, size_t count, uptr_t metric, uptr_t metric_state) const { return filtered_search_(*index_, (b1x8_t const*)vec.data(), vec.size(), count, make_predicate(metric, metric_state)); }
